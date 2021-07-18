@@ -1,5 +1,5 @@
 #include <Arduino.h>
-//#define DEBUG_OUTPUT
+#define DEBUG_OUTPUT
 
 #define PIN_SENS_BREAK 3
 #define PIN_SENS_PEDAL 2 // Interrupt Pins 2, 3
@@ -15,7 +15,7 @@
 
 #define PID_FREQUENCE_TIME (1000/PID_FREQUENCE_HZ) //every 100 ms = 10 Hz
 #define PID_FREQUENCE_HZ 10
-#define PID_SETPOINT_PEDAL_SPEED 115 //in turns per second (115 ~~ 25 km/h)
+#define PID_SETPOINT_PEDAL_SPEED 120 //in turns per second (115 ~~ 25 km/h)
 
 #include <FastPID.h> //https://github.com/mike-matera/FastPID
 
@@ -40,131 +40,6 @@ uint16_t pidEvalTime = 0; // time since last pid evaluation
 //https://github.com/mike-matera/FastPID
 FastPID motorSpeedPid(0.1f, 0.5f, 0.0f, PID_FREQUENCE_HZ, 8, false);
 
-void setup() {
-  Serial.begin(115200);
-
-  pinMode(PIN_PWM_ENGINE, OUTPUT);
-  analogWrite(PIN_PWM_ENGINE, 0);
-
-  pinMode(PIN_PWM_BREAK, OUTPUT);
-  digitalWrite(PIN_PWM_BREAK, LOW); // break off
-
-  pinMode(PIN_SENS_BREAK, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_SENS_BREAK), isrBreak, FALLING);
-
-  pinMode(PIN_SENS_PEDAL, INPUT);
-  attachInterrupt(digitalPinToInterrupt(PIN_SENS_PEDAL), isrPedalCounter, FALLING);
-
-  pinMode(PIN_SENS_SPEED, INPUT_PULLUP);
-  //attachInterrupt(digitalPinToInterrupt(PIN_SENS_SPEED), isrSpeedCounter, FALLING);
-
-
-  pinMode(PIN_LOW_BAT, OUTPUT);
-  digitalWrite(PIN_LOW_BAT, LOW); // LED OFF
-
-  if (motorSpeedPid.err()) {
-    Serial.println("PID faild to inizialize (config error)!");
-    for (;;) {}
-  }
-
-  Serial.println("Setup done.");
-}
-
-void resetEverything() {
-  // Stop Engine
-  analogWrite(PIN_PWM_ENGINE, 0);
-
-  // reset PID
-  motorSpeedPid.clear();
-
-  // reset motor variables
-  motorSpeedValue = 0;
-  motorSpeedValueTarget = 0;
-
-  // pedal speed buffer
-  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++) {
-    pedalCounterBuffer[i] = 0;
-  }
-  pedalCounterBufferPos = 0;
-}
-
-
-void loop() {
-  // schedule time tracking
-  uint16_t loopRunTime = millis() - prevMills;
-  pidEvalTime += loopRunTime;
-  prevMills = millis();
-
-  // fast breaking reaction (and skip the rest)
-  breaking = digitalRead(PIN_SENS_BREAK);
-  if (breaking == 0) {
-    digitalWrite(PIN_PWM_BREAK, HIGH);
-    resetEverything();
-    return;
-  } else {
-    digitalWrite(PIN_PWM_BREAK, LOW);
-  }
-
-  // calculate motor support and set motor
-  if (pidEvalTime >= PID_FREQUENCE_TIME) {
-    caclucatePedalSpeed();
-    calculateMotorSpeedTarget(PID_SETPOINT_PEDAL_SPEED);
-    calculateMotorSpeed();
-  }
-
-  if (pedalSpeed > 0) {
-    analogWrite(PIN_PWM_ENGINE, motorSpeedValue);
-  } else {
-    analogWrite(PIN_PWM_ENGINE, 0);
-  }
-
-  // reset eval time for 10 Hz loop
-  if (pidEvalTime >= 100) {
-    pidEvalTime = 0;
-  }
-
-  // check battery
-  uint16_t batVoltage = analogRead(PIN_SENS_BAT);
-  batVoltage *= 55; // calculate voltage (defined by voltage devider
-  batVoltage /= 100; // make number smaller (XX.X Volt fixed point)
-  if (batVoltage < 370) {
-    // led acid 37V
-    digitalWrite(PIN_LOW_BAT, HIGH);
-  }
-
-  //TODO voltage korrektur
-  // voltage / target voltage => multiplyer for motor target
-
-#ifdef DEBUG_OUTPUT
-  // debug output
-  //delay(50);
-  Serial.print("motorSpeedValue:");
-  Serial.print(motorSpeedValue);
-  Serial.print(", motorSpeedValueTarget:");
-  Serial.print(motorSpeedValueTarget);
-  //  Serial.print(", PedalCounter:");
-  //  Serial.print(pedalCount);
-  Serial.print(", PedalSpeed:");
-  Serial.print(pedalSpeed);
-  Serial.print(", Break:");
-  Serial.print(breaking);
-  Serial.print(", Batt:");
-  Serial.print(batVoltage);
-  Serial.print(", LoopTime:");
-  Serial.print(loopRunTime);
-  //  Serial.print(", PIDTime:");
-  //  Serial.print(pidEvalTime);
-  //  Serial.print(", PedalBufferPosition:");
-  //  Serial.print(pedalCounterBufferPos);
-  //  Serial.print(", PedalBuffer:[");
-  //  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++) {
-  //    Serial.print(pedalCounterBuffer[i]);
-  //    Serial.print(", ");
-  //  }
-  //  Serial.print("]");
-  Serial.println("");
-#endif
-}
 
 void isrBreak() {
   breaking = 1;
@@ -342,4 +217,130 @@ inline void calculateMotorSpeed() {
   } else if (motorSpeedValue < 50) {
     motorSpeedValue = 50;
   }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(PIN_PWM_ENGINE, OUTPUT);
+  analogWrite(PIN_PWM_ENGINE, 0);
+
+  pinMode(PIN_PWM_BREAK, OUTPUT);
+  digitalWrite(PIN_PWM_BREAK, LOW); // break off
+
+  pinMode(PIN_SENS_BREAK, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_SENS_BREAK), isrBreak, FALLING);
+
+  pinMode(PIN_SENS_PEDAL, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PIN_SENS_PEDAL), isrPedalCounter, FALLING);
+
+  pinMode(PIN_SENS_SPEED, INPUT_PULLUP);
+  //attachInterrupt(digitalPinToInterrupt(PIN_SENS_SPEED), isrSpeedCounter, FALLING);
+
+
+  pinMode(PIN_LOW_BAT, OUTPUT);
+  digitalWrite(PIN_LOW_BAT, LOW); // LED OFF
+
+  if (motorSpeedPid.err()) {
+    Serial.println("PID faild to inizialize (config error)!");
+    for (;;) {}
+  }
+
+  Serial.println("Setup done.");
+}
+
+void resetEverything() {
+  // Stop Engine
+  analogWrite(PIN_PWM_ENGINE, 0);
+
+  // reset PID
+  motorSpeedPid.clear();
+
+  // reset motor variables
+  motorSpeedValue = 0;
+  motorSpeedValueTarget = 0;
+
+  // pedal speed buffer
+  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++) {
+    pedalCounterBuffer[i] = 0;
+  }
+  pedalCounterBufferPos = 0;
+}
+
+
+void loop() {
+  // schedule time tracking
+  uint16_t loopRunTime = millis() - prevMills;
+  pidEvalTime += loopRunTime;
+  prevMills = millis();
+
+  // fast breaking reaction (and skip the rest)
+  breaking = digitalRead(PIN_SENS_BREAK);
+  if (breaking == 0) {
+    digitalWrite(PIN_PWM_BREAK, HIGH);
+    resetEverything();
+    return;
+  } else {
+    digitalWrite(PIN_PWM_BREAK, LOW);
+  }
+
+  // calculate motor support and set motor
+  if (pidEvalTime >= PID_FREQUENCE_TIME) {
+    caclucatePedalSpeed();
+    calculateMotorSpeedTarget(PID_SETPOINT_PEDAL_SPEED);
+    calculateMotorSpeed();
+  }
+
+  if (pedalSpeed > 0) {
+    analogWrite(PIN_PWM_ENGINE, motorSpeedValue);
+  } else {
+    analogWrite(PIN_PWM_ENGINE, 0);
+  }
+
+  // reset eval time for 10 Hz loop
+  if (pidEvalTime >= 100) {
+    pidEvalTime = 0;
+  }
+
+  // check battery
+  uint16_t batVoltage = analogRead(PIN_SENS_BAT);
+  batVoltage *= 55; // calculate voltage (defined by voltage devider
+  batVoltage /= 100; // make number smaller (XX.X Volt fixed point)
+  if (batVoltage < 370) {
+    // led acid 37V
+    digitalWrite(PIN_LOW_BAT, HIGH);
+  }
+
+  //TODO voltage korrektur
+  // voltage / target voltage => multiplyer for motor target
+
+#ifdef DEBUG_OUTPUT
+  // debug output
+  //delay(50);
+  Serial.print("speed:");
+  Serial.print(motorSpeedValue);
+  Serial.print(", speedTarget:");
+  Serial.print(motorSpeedValueTarget);
+  //  Serial.print(", PedalCounter:");
+  //  Serial.print(pedalCount);
+  Serial.print(", pedal:");
+  Serial.print(pedalSpeed);
+  // Serial.print(", Break:");
+  // Serial.print(breaking);
+  Serial.print(", Batt:");
+  Serial.print(batVoltage);
+  //Serial.print(", LoopTime:");
+  //Serial.print(loopRunTime);
+  //  Serial.print(", PIDTime:");
+  //  Serial.print(pidEvalTime);
+  //  Serial.print(", PedalBufferPosition:");
+  //  Serial.print(pedalCounterBufferPos);
+  //  Serial.print(", PedalBuffer:[");
+  //  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++) {
+  //    Serial.print(pedalCounterBuffer[i]);
+  //    Serial.print(", ");
+  //  }
+  //  Serial.print("]");
+  Serial.println("");
+#endif
 }
