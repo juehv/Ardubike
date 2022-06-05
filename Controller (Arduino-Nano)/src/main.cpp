@@ -6,18 +6,18 @@
 #define PIN_SENS_SPEED 5 // Interrupt Pins 2, 3
 #define PIN_SENS_BAT A7
 
-#define PIN_PWM_ENGINE 9 // PWM Pins 3, 5, 6, 9, 10, 11
-#define PIN_PWM_BREAK A5
+#define PIN_PWM_VESC 9 // PWM Pins 3, 5, 6, 9, 10, 11
 
 #define PIN_LOW_BAT LED_BUILTIN // internal LED
 
 #define PEDAL_COUNTER_BUFFER_SIZE 12 // size of buffer for calculating pedalling speed
 
-#define PID_FREQUENCE_TIME (1000/PID_FREQUENCE_HZ) //every 100 ms = 10 Hz
 #define PID_FREQUENCE_HZ 10
 #define PID_SETPOINT_PEDAL_SPEED 120 //in turns per second (115 ~~ 25 km/h)
+#define PID_FREQUENCE_TIME (1000/PID_FREQUENCE_HZ) //every 100 ms = 10 Hz
 
 #include <FastPID.h> //https://github.com/mike-matera/FastPID
+#include <Servo.h> //https://www.arduino.cc/reference/en/libraries/servo/
 
 uint32_t prevMills = 0;
 
@@ -40,11 +40,12 @@ uint16_t pidEvalTime = 0; // time since last pid evaluation
 //https://github.com/mike-matera/FastPID
 FastPID motorSpeedPid(0.1f, 0.5f, 0.0f, PID_FREQUENCE_HZ, 8, false);
 
+Servo myservo; 
 
 void isrBreak() {
   breaking = 1;
   // ensure fast break reaction
-  analogWrite(PIN_PWM_ENGINE, 0);
+  myservo.write(0);
 }
 
 void isrSpeedCounter() {
@@ -85,32 +86,6 @@ void isrPedalCounter() {
 }
 
 inline void caclucatePedalSpeed() {
-
-  // evaluation of pedal speed (fixed hz version)
-  //  if (evalTime > 250){
-  //    if (pedalCount > 0){
-  //      // still pedaling -> calculate pedal speed in turns per second
-  //      // 12 pulses per turn -> for 1 U/s = 12 per second = 3 per eval (250ms)
-  //      // count * 4 = counts per second
-  //      // counts per second / 12 = turns per second
-  //      // => count/3=turns per second
-  //      // turns per second *10 for getting one digit fix point number
-  //      uint16_t tmpPedalSpeed = (pedalCount*10)/3;
-  //      pedalSpeed += tmpPedalSpeed;
-  //      pedalSpeed /= 2;
-  //      pedalStopCounter = 0;
-  //    } else {
-  //      // stoped pedaling?
-  //      if (pedalStopCounter > 0){
-  //        pedalSpeed = 0;
-  //      } else {
-  //        pedalStopCounter ++;
-  //      }
-  //    }
-  //    pedalCount = 0;
-  //    evalTime=0;
-  //  }
-
   // caluclate pedalling speed (contiuus version)
   // buffer holds timestamps with measured sensor pulses
   // 12 pulses per revolution
@@ -190,43 +165,41 @@ inline void calculateMotorSpeedTarget(uint8_t setpointPedalSpeed) {
 }
 
 inline void calculateMotorSpeed() {
-  // calculate motor speed value from target
+  motorSpeedValue = map(motorSpeedValueTarget, 0, 255, 0, 180);
+  // // calculate motor speed value from target
 
-  // case for breaking
-  if (motorSpeedValueTarget == 0 || breaking == 0) {
-    motorSpeedValue = 0;
-    return;
-  }
+  // // case for breaking
+  // if (motorSpeedValueTarget == 0 || breaking == 0) {
+  //   motorSpeedValue = 0;
+  //   return;
+  // }
 
-  // case for close to target
-  if (motorSpeedValue > motorSpeedValueTarget - 20 ||
-      motorSpeedValue < motorSpeedValueTarget + 20) {
-    motorSpeedValue = motorSpeedValueTarget;
-    return;
-  }
+  // // case for close to target
+  // if (motorSpeedValue > motorSpeedValueTarget - 20 ||
+  //     motorSpeedValue < motorSpeedValueTarget + 20) {
+  //   motorSpeedValue = motorSpeedValueTarget;
+  //   return;
+  // }
 
-  // case for ramping
-  if (motorSpeedValue < motorSpeedValueTarget) {
-    motorSpeedValue += 20;
-  } else if (motorSpeedValue > motorSpeedValueTarget) {
-    motorSpeedValue -= 20;
-  }
+  // // case for ramping
+  // if (motorSpeedValue < motorSpeedValueTarget) {
+  //   motorSpeedValue += 20;
+  // } else if (motorSpeedValue > motorSpeedValueTarget) {
+  //   motorSpeedValue -= 20;
+  // }
 
-  if (motorSpeedValue > 220) {
-    motorSpeedValue = 255;
-  } else if (motorSpeedValue < 50) {
-    motorSpeedValue = 50;
-  }
+  // if (motorSpeedValue > 220) {
+  //   motorSpeedValue = 255;
+  // } else if (motorSpeedValue < 50) {
+  //   motorSpeedValue = 50;
+  // }
 }
 
 void setup() {
   Serial.begin(115200);
 
-  pinMode(PIN_PWM_ENGINE, OUTPUT);
-  analogWrite(PIN_PWM_ENGINE, 0);
-
-  pinMode(PIN_PWM_BREAK, OUTPUT);
-  digitalWrite(PIN_PWM_BREAK, LOW); // break off
+  myservo.attach(PIN_PWM_VESC);
+  myservo.write(0);
 
   pinMode(PIN_SENS_BREAK, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_SENS_BREAK), isrBreak, FALLING);
@@ -251,7 +224,7 @@ void setup() {
 
 void resetEverything() {
   // Stop Engine
-  analogWrite(PIN_PWM_ENGINE, 0);
+  myservo.write(0);
 
   // reset PID
   motorSpeedPid.clear();
@@ -275,14 +248,14 @@ void loop() {
   prevMills = millis();
 
   // fast breaking reaction (and skip the rest)
-  breaking = digitalRead(PIN_SENS_BREAK);
-  if (breaking == 0) {
-    digitalWrite(PIN_PWM_BREAK, HIGH);
-    resetEverything();
-    return;
-  } else {
-    digitalWrite(PIN_PWM_BREAK, LOW);
-  }
+  // breaking = digitalRead(PIN_SENS_BREAK);
+  // if (breaking == 0) {
+  //   digitalWrite(PIN_PWM_BREAK, HIGH);
+  //   resetEverything();
+  //   return;
+  // } else {
+  //   digitalWrite(PIN_PWM_BREAK, LOW);
+  // }
 
   // calculate motor support and set motor
   if (pidEvalTime >= PID_FREQUENCE_TIME) {
@@ -292,9 +265,9 @@ void loop() {
   }
 
   if (pedalSpeed > 0) {
-    analogWrite(PIN_PWM_ENGINE, motorSpeedValue);
+    myservo.write(motorSpeedValue);
   } else {
-    analogWrite(PIN_PWM_ENGINE, 0);
+    myservo.write(0);
   }
 
   // reset eval time for 10 Hz loop
