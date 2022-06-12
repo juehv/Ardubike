@@ -23,9 +23,8 @@ SOFTWARE.
  */
 
 #include <Arduino.h>
-#define DEBUG_OUTPUT
+//#define DEBUG_OUTPUT
 
-#define PIN_SENS_BREAK 2 // motor is not able to break .. will not be used
 #define PIN_SENS_PEDAL 3 // Interrupt Pins 2, 3
 #define PIN_SENS_SPEED 5 // Interrupt Pins 2, 3
 #define PIN_SENS_BAT A7
@@ -38,41 +37,56 @@ SOFTWARE.
 #define PEDAL_COUNTER_BUFFER_SIZE 12 // size of buffer for calculating pedalling speed
 
 #define PID_FREQUENCE_HZ 10
-#define PID_SETPOINT_PEDAL_SPEED 100 //in turns per second + two digit fixed point (115 ~~ 25 km/h for the testbike)
-#define PID_FREQUENCE_TIME (1000/PID_FREQUENCE_HZ) //every 100 ms = 10 Hz
+#define PID_SETPOINT_PEDAL_SPEED 100                 // in turns per second + two digit fixed point (115 ~~ 25 km/h for the testbike)
+#define PID_FREQUENCE_TIME (1000 / PID_FREQUENCE_HZ) // every 100 ms = 10 Hz
 
-#include <FastPID.h> //https://github.com/mike-matera/FastPID
-#include <Servo.h> //https://www.arduino.cc/reference/en/libraries/servo/
+#define SOFTSERIAL_RX_PIN 2
+#define SOFTSERIAL_TX_PIN A0
+
+#include <FastPID.h>        //https://github.com/mike-matera/FastPID
+#include <Servo.h>          //https://www.arduino.cc/reference/en/libraries/servo/
+#include <SoftwareSerial.h> //https://docs.arduino.cc/learn/built-in-libraries/software-serial
+#include <TinyGPS++.h>      //https://github.com/mikalhart/TinyGPSPlus
 
 uint32_t prevMills = 0;
 
-uint8_t pedalStopCounter = 0; // 0 if pedaling; counting how much cycles in a row not pedaling
+uint8_t pedalStopCounter = 0;     // 0 if pedaling; counting how much cycles in a row not pedaling
 volatile uint16_t pedalCount = 0; // counts pedal pulses in ISR
 
 uint16_t pedalSpeed = 0; // roghly turns per second (U/s) with two digit fixed point (*100)
 volatile uint8_t pedalCounterBufferPos = 0;
-volatile uint16_t* pedalCounterBuffer = new uint16_t[PEDAL_COUNTER_BUFFER_SIZE];
+volatile uint16_t *pedalCounterBuffer = new uint16_t[PEDAL_COUNTER_BUFFER_SIZE];
 volatile uint32_t pedalCounterPreviousValue = 0;
 
 int16_t motorSpeedValue = 0;
 int16_t motorSpeedValueTarget = 0;
 
-//FastPID(float kp, float ki, float kd, float hz, int bits=16, bool sign=false)
-//https://github.com/mike-matera/FastPID
+uint16_t batVoltage;
+
+// FastPID(float kp, float ki, float kd, float hz, int bits=16, bool sign=false)
+// https://github.com/mike-matera/FastPID
 FastPID motorSpeedPid(0.1f, 0.5f, 0.0f, PID_FREQUENCE_HZ, 8, false);
 
-Servo myservo; 
+Servo motorSpeedOutputPWM;
+
+// Set up a new SoftwareSerial object
+SoftwareSerial sSerial(SOFTSERIAL_RX_PIN, SOFTSERIAL_TX_PIN);
+TinyGPSPlus gps;
+bool gpsLocked = false;
 
 void resetEverything();
 
-void isrPedalCounter() {
+void isrPedalCounter()
+{
   uint32_t tmpMillis = millis();
 
   // clear buffer from old values
   // 20 seconds stop time allowed without clearing
   if (pedalCounterPreviousValue == 0 ||
-      (tmpMillis - pedalCounterPreviousValue) > 3000) {
-    for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++) {
+      (tmpMillis - pedalCounterPreviousValue) > 3000)
+  {
+    for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++)
+    {
       pedalCounterBuffer[i] = 0;
     }
     pedalCounterBufferPos = 0;
@@ -83,23 +97,28 @@ void isrPedalCounter() {
 
   // calc timestamp diff
   uint16_t tmpDiff = abs(tmpMillis - pedalCounterPreviousValue);
-Serial.println(tmpDiff);
+  Serial.println(tmpDiff);
   // filter bouncing and exit
-  if (tmpDiff < 30) { // 28ms = 3 turns per second for 12 pulses per revolution
+  if (tmpDiff < 30)
+  { // 28ms = 3 turns per second for 12 pulses per revolution
     return;
-  } else {
+  }
+  else
+  {
     pedalCounterBuffer[pedalCounterBufferPos] = tmpDiff;
   }
 
   // update position pointer
   pedalCounterBufferPos++;
-  if (pedalCounterBufferPos >= PEDAL_COUNTER_BUFFER_SIZE) {
+  if (pedalCounterBufferPos >= PEDAL_COUNTER_BUFFER_SIZE)
+  {
     pedalCounterBufferPos = 0;
   }
   pedalCounterPreviousValue = tmpMillis;
 }
 
-inline void caclucatePedalSpeed() {
+inline void caclucatePedalSpeed()
+{
   // caluclate pedalling speed (contiuus version)
   // buffer holds timestamps with measured sensor pulses
   // 12 pulses per revolution
@@ -108,7 +127,8 @@ inline void caclucatePedalSpeed() {
   // if values are old skip calculation
   // TODO don't know what the right threshold is for registering stop paddelling
   if (pedalCounterPreviousValue == 0 ||
-      (millis() - pedalCounterPreviousValue) > 500) {
+      (millis() - pedalCounterPreviousValue) > 500)
+  {
     pedalSpeed = 0;
     return;
   }
@@ -116,45 +136,61 @@ inline void caclucatePedalSpeed() {
   // calculate AVG time between pulses
   uint8_t noOfUsedSlots = 0;
   uint16_t tmpAVG = 0;
-  noInterrupts();
-  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++) {
-    if (pedalCounterBuffer[i] > 0) {
+  // noInterrupts();
+  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++)
+  {
+    if (pedalCounterBuffer[i] > 0)
+    {
       noOfUsedSlots++;
       tmpAVG += pedalCounterBuffer[i];
-    } else {
+    }
+    else
+    {
       // as buffer is build up from 0 to sizeOf, we can stop when we find empty slots
       break;
     }
   }
-  interrupts();
+  // interrupts();
 
   // calculate turns per second
-  if (noOfUsedSlots == 0) {
+  if (noOfUsedSlots == 0)
+  {
     // not pedalling
     pedalSpeed = 0;
-  } else if (noOfUsedSlots > 2) {
+  }
+  else if (noOfUsedSlots > 2)
+  {
     tmpAVG /= noOfUsedSlots;
-    if (pedalSpeed > 1) {
+    if (pedalSpeed > 1)
+    {
       // low pass filter
       pedalSpeed += (100000 / (tmpAVG * PEDAL_COUNTER_PULSES_PER_TURN));
       pedalSpeed /= 2;
-    } else {
+    }
+    else
+    {
       // no filtering
       pedalSpeed = (100000 / (tmpAVG * PEDAL_COUNTER_PULSES_PER_TURN));
     }
-  } else {
+  }
+  else
+  {
     // just started pedaling --> start support
     pedalSpeed = 1;
   }
 }
 
-inline void calculateMotorSpeedTarget(uint8_t setpointPedalSpeed) {
+inline void calculateMotorSpeedTarget(uint8_t setpointPedalSpeed)
+{
   // calculate motor speed value (--> PID contoller)
-  if (pedalSpeed == 0) {
+  if (pedalSpeed == 0)
+  {
     // no pedalling -> no motor
     motorSpeedValueTarget = 0;
     motorSpeedPid.clear();
-  } else if (pedalSpeed < setpointPedalSpeed * 0.5) {
+  }
+  else if (pedalSpeed < setpointPedalSpeed * 0.5)
+  {
     // far under setpoint, just turn on motor
     motorSpeedValueTarget = 255;
     motorSpeedPid.clear();
@@ -162,19 +198,28 @@ inline void calculateMotorSpeedTarget(uint8_t setpointPedalSpeed) {
     //    // far over setpoint, just turn off motor
     //    motorSpeedValueTarget = 0;
     //    motorSpeedPid.clear();
-  } else {
-    // optimize with pid
-    motorSpeedValueTarget = motorSpeedPid.step(setpointPedalSpeed , pedalSpeed); // support for 1 turn per second
   }
-  
-  motorSpeedValue = map(motorSpeedValueTarget, 0, 255, 0, 180);
+  else
+  {
+    // optimize with pid
+    motorSpeedValueTarget = motorSpeedPid.step(setpointPedalSpeed, pedalSpeed); // support for 1 turn per second
+  }
+
+  // map motor speed to servo output, but only when gps is there and reduce performance to 1/3 if not
+  motorSpeedValue = gpsLocked ? map(motorSpeedValueTarget, 0, 255, 0, 100) : map(motorSpeedValueTarget, 0, 255, 0, 60);
 }
 
-void setup() {
+void setup()
+{
   Serial.begin(115200);
 
-  myservo.attach(PIN_PWM_VESC);
-  myservo.write(0);
+  // Define pin modes for soft serial TX and RX
+  pinMode(SOFTSERIAL_RX_PIN, INPUT);
+  pinMode(SOFTSERIAL_TX_PIN, OUTPUT);
+  sSerial.begin(9600);
+
+  motorSpeedOutputPWM.attach(PIN_PWM_VESC);
+  motorSpeedOutputPWM.write(0);
 
   // pinMode(PIN_SENS_BREAK, INPUT_PULLUP);
   // attachInterrupt(digitalPinToInterrupt(PIN_SENS_BREAK), isrBreak, FALLING);
@@ -183,23 +228,28 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(PIN_SENS_PEDAL), isrPedalCounter, FALLING);
 
   pinMode(PIN_SENS_SPEED, INPUT_PULLUP);
-  //attachInterrupt(digitalPinToInterrupt(PIN_SENS_SPEED), isrSpeedCounter, FALLING);
-
+  // attachInterrupt(digitalPinToInterrupt(PIN_SENS_SPEED), isrSpeedCounter, FALLING);
 
   pinMode(PIN_LOW_BAT, OUTPUT);
   digitalWrite(PIN_LOW_BAT, LOW); // LED OFF
 
-  if (motorSpeedPid.err()) {
+  if (motorSpeedPid.err())
+  {
     Serial.println("PID faild to inizialize (config error)!");
-    for (;;) {}
+    for (;;)
+    {
+    }
   }
+
+  resetEverything();
 
   Serial.println("Setup done.");
 }
 
-void resetEverything() {
+void resetEverything()
+{
   // Stop Engine
-  myservo.write(0);
+  motorSpeedOutputPWM.write(0);
 
   // reset PID
   motorSpeedPid.clear();
@@ -209,75 +259,162 @@ void resetEverything() {
   motorSpeedValueTarget = 0;
 
   // pedal speed buffer
-  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++) {
+  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++)
+  {
     pedalCounterBuffer[i] = 0;
   }
   pedalCounterBufferPos = 0;
 }
 
+void loop()
+{
+  {
+    // init pwm / vesc (comment out for normal operation)
+    motorSpeedOutputPWM.write(0);
+    _delay_ms(1000);
+    motorSpeedOutputPWM.write(180);
+    _delay_ms(1000);
+    return;
+  }
 
-void loop() {
   // wait for next round
   uint16_t loopRunTime;
   uint16_t loopUtilization = (millis() - prevMills) * 100 / PID_FREQUENCE_TIME;
-  while ((loopRunTime = millis() - prevMills) < PID_FREQUENCE_TIME){
-    _delay_ms(5);
+  while ((loopRunTime = millis() - prevMills) < PID_FREQUENCE_TIME)
+  {
+    //_delay_ms(5);
   }
   prevMills = millis();
+
+  // check for gps data
+  while (sSerial.available())
+  {
+    if (gps.encode(sSerial.read())) // encode gps data
+    {
+#ifdef DEBUG_OUTPUT
+      Serial.print("SATS: ");
+      Serial.println(gps.satellites.value());
+      Serial.print("LAT: ");
+      Serial.println(gps.location.lat(), 6);
+      Serial.print("LONG: ");
+      Serial.println(gps.location.lng(), 6);
+      Serial.print("ALT: ");
+      Serial.println(gps.altitude.meters());
+      Serial.print("SPEED: ");
+      Serial.println(gps.speed.mps());
+
+      Serial.print("Date: ");
+      Serial.print(gps.date.day());
+      Serial.print("/");
+      Serial.print(gps.date.month());
+      Serial.print("/");
+      Serial.println(gps.date.year());
+
+      Serial.print("Hour: ");
+      Serial.print(gps.time.hour());
+      Serial.print(":");
+      Serial.print(gps.time.minute());
+      Serial.print(":");
+      Serial.println(gps.time.second());
+      Serial.println("---------------------------");
+#endif
+
+      // signal available?
+      gpsLocked = gps.satellites.value() > 0;
+
+      // push data to datalogger
+      // sSerial.print("SAT");
+      sSerial.print(gps.satellites.value());
+      sSerial.print(",");
+      sSerial.print(gps.date.day());
+      sSerial.print(".");
+      sSerial.print(gps.date.month());
+      sSerial.print(".");
+      sSerial.print(gps.date.year());
+      sSerial.print("-");
+      sSerial.print(gps.time.hour());
+      sSerial.print(":");
+      sSerial.print(gps.time.minute());
+      sSerial.print(":");
+      sSerial.print(gps.time.second());
+      // sSerial.print(", LAT: ");
+      // sSerial.print(gps.location.lat(), 6);
+      // sSerial.print(", LONG: ");
+      // sSerial.print(gps.location.lng(), 6);
+      // sSerial.print(", ALT: ");
+      // sSerial.print(gps.altitude.meters());
+      sSerial.print(",");
+      sSerial.print(gps.speed.mps());
+      sSerial.print(",");
+      sSerial.print(motorSpeedValue);
+      sSerial.print(",");
+      sSerial.print(motorSpeedValueTarget);
+      // sSerial.print(",");
+      // sSerial.print(pedalCount);
+      sSerial.print(",");
+      sSerial.print(pedalSpeed);
+      // sSerial.print(",");
+      // sSerial.print(batVoltage);
+      // sSerial.print(", LoopUtilization:");
+      // sSerial.print(loopUtilization);
+      sSerial.println("");
+    }
+  }
 
   // calculate motor support and set motor
   caclucatePedalSpeed();
   calculateMotorSpeedTarget(PID_SETPOINT_PEDAL_SPEED);
-  
-  if (pedalSpeed > 0) {
-    myservo.write(motorSpeedValue);
-  } else {
-    myservo.write(0);
+
+  if (pedalSpeed > 0)
+  {
+    motorSpeedOutputPWM.write(motorSpeedValue);
+  }
+  else
+  {
+    motorSpeedOutputPWM.write(0);
   }
 
   // check battery
-  uint16_t batVoltage = analogRead(PIN_SENS_BAT);
-  batVoltage *= 55; // calculate voltage (defined by voltage devider
+  batVoltage = analogRead(PIN_SENS_BAT);
+  batVoltage *= 55;  // calculate voltage (defined by voltage devider
   batVoltage /= 100; // make number smaller (XX.X Volt fixed point)
-  if (batVoltage < 370) {
+  if (batVoltage < 370)
+  {
     // led acid 37V
     digitalWrite(PIN_LOW_BAT, HIGH);
   }
 
-  //TODO voltage korrektur
-  // voltage / target voltage => multiplyer for motor target
+  // TODO voltage korrektur
+  //  voltage / target voltage => multiplyer for motor target
 
 #ifdef DEBUG_OUTPUT
   // debug output
-  //delay(50);
+  // delay(50);
   Serial.print("speed:");
   Serial.print(motorSpeedValue);
   Serial.print(", speedTarget:");
   Serial.print(motorSpeedValueTarget);
-  //  Serial.print(", PedalCounter:");
-  //  Serial.print(pedalCount);
+  Serial.print(", PedalCounter:");
+  Serial.print(pedalCount);
   Serial.print(", pedalSpeed:");
   Serial.print(pedalSpeed);
-  // Serial.print(", Break:");
-  // Serial.print(breaking);
   Serial.print(", Batt:");
   Serial.print(batVoltage);
-  //Serial.print(", LoopTime:");
-  //Serial.print(loopRunTime);
+  // Serial.print(", LoopTime:");
+  // Serial.print(loopRunTime);
   Serial.print(", LoopUtilization:");
   Serial.print(loopUtilization);
-  //  Serial.print(", PIDTime:");
-  //  Serial.print(pidEvalTime);
-  //  Serial.print(", PedalBufferPosition:");
-  //  Serial.print(pedalCounterBufferPos);
-  //  Serial.print(", PedalBuffer:[");
-  //  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++) {
-  //    Serial.print(pedalCounterBuffer[i]);
-  //    Serial.print(", ");
-  //  }
-  //  Serial.print("]");
+  Serial.print(", PedalBufferPosition:");
+  Serial.print(pedalCounterBufferPos);
+  Serial.print(", PedalBuffer:[");
+  for (uint8_t i = 0; i < PEDAL_COUNTER_BUFFER_SIZE; i++)
+  {
+    Serial.print(pedalCounterBuffer[i]);
+    Serial.print(", ");
+  }
+  Serial.print("]");
   Serial.println("");
 #endif
 
-//TODO transmit information to esp32, read input from esp32
+  // TODO transmit information to esp32, read input from esp32
 }
