@@ -205,8 +205,8 @@ inline void calculateMotorSpeedTarget(uint8_t setpointPedalSpeed)
     motorSpeedValueTarget = motorSpeedPid.step(setpointPedalSpeed, pedalSpeed); // support for 1 turn per second
   }
 
-  // map motor speed to servo output, but only when gps is there and reduce performance to 1/3 if not
-  motorSpeedValue = gpsLocked ? map(motorSpeedValueTarget, 0, 255, 0, 100) : map(motorSpeedValueTarget, 0, 255, 0, 60);
+  // map motor speed to servo output, but only when gps is there and reduce performance to 1/2 if not
+  motorSpeedValue = gpsLocked ? map(motorSpeedValueTarget, 0, 255, 0, 180) : map(motorSpeedValueTarget, 0, 255, 0, 90);
 }
 
 void setup()
@@ -268,14 +268,14 @@ void resetEverything()
 
 void loop()
 {
-  {
-    // init pwm / vesc (comment out for normal operation)
-    motorSpeedOutputPWM.write(0);
-    _delay_ms(1000);
-    motorSpeedOutputPWM.write(180);
-    _delay_ms(1000);
-    return;
-  }
+  // {
+  //   // init pwm -> vesc (comment out for normal operation)
+  //   motorSpeedOutputPWM.write(0);
+  //   _delay_ms(1000);
+  //   motorSpeedOutputPWM.write(180);
+  //   _delay_ms(1000);
+  //   return;
+  // }
 
   // wait for next round
   uint16_t loopRunTime;
