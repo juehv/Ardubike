@@ -37,7 +37,7 @@ SOFTWARE.
 #define PEDAL_COUNTER_BUFFER_SIZE 12 // size of buffer for calculating pedalling speed
 
 #define PID_FREQUENCE_HZ 10
-#define PID_SETPOINT_PEDAL_SPEED 100                 // in turns per second + two digit fixed point (115 ~~ 25 km/h for the testbike)
+#define PID_SETPOINT_PEDAL_SPEED 200                 // in turns per second + two digit fixed point (200 = 110 turns per minute)
 #define PID_FREQUENCE_TIME (1000 / PID_FREQUENCE_HZ) // every 100 ms = 10 Hz
 
 #define SOFTSERIAL_RX_PIN 2
@@ -73,6 +73,7 @@ Servo motorSpeedOutputPWM;
 SoftwareSerial sSerial(SOFTSERIAL_RX_PIN, SOFTSERIAL_TX_PIN);
 TinyGPSPlus gps;
 bool gpsLocked = false;
+double bikeSpeedMPS = 0;
 
 void resetEverything();
 
@@ -127,7 +128,7 @@ inline void caclucatePedalSpeed()
   // if values are old skip calculation
   // TODO don't know what the right threshold is for registering stop paddelling
   if (pedalCounterPreviousValue == 0 ||
-      (millis() - pedalCounterPreviousValue) > 500)
+      (millis() - pedalCounterPreviousValue) > 250)
   {
     pedalSpeed = 0;
     return;
@@ -202,11 +203,21 @@ inline void calculateMotorSpeedTarget(uint8_t setpointPedalSpeed)
   else
   {
     // optimize with pid
-    motorSpeedValueTarget = motorSpeedPid.step(setpointPedalSpeed, pedalSpeed); // support for 1 turn per second
+    //motorSpeedValueTarget = motorSpeedPid.step(setpointPedalSpeed, pedalSpeed); // support for 1 turn per second
+  
+    // try a linear support after half cadence is reached
+    motorSpeedValueTarget = 255 - map(pedalSpeed, setpointPedalSpeed * 0.5, setpointPedalSpeed, 0, 127);
   }
 
   // map motor speed to servo output, but only when gps is there and reduce performance to 1/2 if not
   motorSpeedValue = gpsLocked ? map(motorSpeedValueTarget, 0, 255, 0, 180) : map(motorSpeedValueTarget, 0, 255, 0, 90);
+  
+  // linear fade out when too fast (>25 km/h)
+  if (bikeSpeedMPS > 6.5){
+    long bikeSpeedAsLong = (long) bikeSpeedMPS * 100;
+    motorSpeedValue *= map(bikeSpeedAsLong, 650, 750, 10, 00) * 0.1;
+    motorSpeedValue = motorSpeedValue < 0 ? 0 : motorSpeedValue;
+  }
 }
 
 void setup()
@@ -344,7 +355,9 @@ void loop()
       // sSerial.print(", ALT: ");
       // sSerial.print(gps.altitude.meters());
       sSerial.print(",");
+      bikeSpeedMPS = gps.speed.mps();
       sSerial.print(gps.speed.mps());
+
       sSerial.print(",");
       sSerial.print(motorSpeedValue);
       sSerial.print(",");
